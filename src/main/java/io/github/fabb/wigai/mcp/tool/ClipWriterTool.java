@@ -304,4 +304,67 @@ public class ClipWriterTool {
             .callHandler(handler)
             .build();
     }
+
+    /**
+     * Creates the MCP tool specification for reading notes from a clip.
+     * Returns notes in the same format as write_notes accepts: {p, s, v, d}
+     */
+    public static McpServerFeatures.SyncToolSpecification readNotesSpecification(
+            BitwigApiFacade bitwigApiFacade,
+            StructuredLogger logger) {
+
+        var readNotesSchema = """
+            {
+              "type": "object",
+              "properties": {
+                "track_index": {
+                  "type": "integer",
+                  "description": "Track index (0-based)",
+                  "minimum": 0
+                },
+                "slot_index": {
+                  "type": "integer",
+                  "description": "Clip slot index (0-based)",
+                  "minimum": 0
+                }
+              },
+              "required": ["track_index", "slot_index"]
+            }""";
+
+        var tool = McpSchema.Tool.builder()
+            .name("read_notes")
+            .description("Read all MIDI notes from a clip at the specified track and slot. Returns notes in the same format as write_notes accepts: array of {p, s, v, d} objects")
+            .inputSchema(readNotesSchema)
+            .build();
+
+        BiFunction<McpSyncServerExchange, CallToolRequest, McpSchema.CallToolResult> handler =
+            (exchange, req) -> McpErrorHandler.executeWithErrorHandling(
+                "read_notes",
+                logger,
+                () -> {
+                    Map<String, Object> args = req.arguments();
+
+                    Integer trackIndex = ParameterValidator.validateRequiredInteger(args, "track_index", "read_notes");
+                    Integer slotIndex = ParameterValidator.validateRequiredInteger(args, "slot_index", "read_notes");
+
+                    // Read notes from the clip
+                    List<Map<String, Object>> notes = bitwigApiFacade.readNotesFromClip(trackIndex, slotIndex);
+
+                    Map<String, Object> responseData = new LinkedHashMap<>();
+                    responseData.put("action", "notes_read");
+                    responseData.put("track_index", trackIndex);
+                    responseData.put("slot_index", slotIndex);
+                    responseData.put("count", notes.size());
+                    responseData.put("notes", notes);
+                    responseData.put("message", String.format("Read %d notes from clip at track %d, slot %d", notes.size(), trackIndex, slotIndex));
+
+                    return responseData;
+                }
+            );
+
+        return McpServerFeatures.SyncToolSpecification.builder()
+            .tool(tool)
+            .callHandler(handler)
+            .build();
+    }
 }

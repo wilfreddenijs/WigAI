@@ -63,6 +63,25 @@ public class BitwigApiFacade {
     private Integer currentlySelectedDeviceIndex = null;
     private Integer currentlySelectedPageIndex = null;
 
+    // Note data cache for reading notes from clips (Moss pattern)
+    // Structure: noteDataCache[step][pitch] = {velocity, duration}
+    // Using synchronized map for thread-safe access from NoteStep observer callback
+    private final Map<Integer, Map<Integer, NoteData>> noteDataCache = 
+        java.util.Collections.synchronizedMap(new LinkedHashMap<>());
+
+    /**
+     * Simple data holder for note information from NoteStep observer.
+     */
+    private static class NoteData {
+        final int velocity;
+        final double duration;
+        
+        NoteData(int velocity, double duration) {
+            this.velocity = velocity;
+            this.duration = duration;
+        }
+    }
+
     /**
      * Creates a new BitwigApiFacade instance.
      *
@@ -108,6 +127,12 @@ public class BitwigApiFacade {
         // Grid: 256 steps (16 bars * 16 steps), 128 pitches (full MIDI range)
         this.cursorClip = host.createLauncherCursorClip(256, 128);
         this.cursorClip.scrollToKey(0); // Start at C-1 (MIDI note 0)
+        
+        // Install NoteStep observer in constructor (Moss pattern)
+        // CRITICAL: addNoteStepObserver can ONLY be called during initialization!
+        // The callback continuously populates noteDataCache as notes change
+        this.cursorClip.addNoteStepObserver(this::handleNoteStepData);
+        logger.info("BitwigApiFacade: Installed NoteStep observer for clip note reading");
 
         // Initialize device banks for each track to enable device enumeration
         this.trackDeviceBanks = new ArrayList<>();
@@ -2390,6 +2415,95 @@ public class BitwigApiFacade {
     }
 
     /**
+     * Reads all notes from the clip at the given track and slot.
+     * Returns notes in the SAME format as writeNotesToClip accepts: {p, s, v, d}
+     * Uses cached note data from the NoteStep observer installed in constructor (Moss pattern).
+     * 
+     * CRITICAL: The NoteStep observer continuously updates noteDataCache for the currently selected clip.
+     * This method selects the target clip and returns the cached data.
+     * 
+     * @param trackIndex Track index (0-based)
+     * @param slotIndex Slot index (0-based)  
+     * @return List of note data maps with "p" (pitch), "s" (step), "v" (velocity), "d" (duration) fields
+     * @throws BitwigApiException if clip doesn't exist or read fails
+     */
+    public List<Map<String, Object>> readNotesFromClip(int trackIndex, int slotIndex) throws BitwigApiException {
+        final String operation = "readNotesFromClip";
+        logger.info("BitwigApiFacade: Reading notes from track " + trackIndex + ", slot " + slotIndex);
+        
+        return WigAIErrorHandler.executeWithErrorHandling(operation, () -> {
+            // Step 1: Validate parameters
+            if (trackIndex < 0 || trackIndex >= trackBank.getSizeOfBank()) {
+                throw new BitwigApiException(
+                    ErrorCode.INVALID_RANGE,
+                    operation,
+                    "Track index must be between 0 and " + (trackBank.getSizeOfBank() - 1) + ", got: " + trackIndex,
+                    Map.of("trackIndex", trackIndex)
+                );
+            }
+            
+            if (slotIndex < 0 || slotIndex >= Constants.MAX_SCENES) {
+                throw new BitwigApiException(
+                    ErrorCode.INVALID_RANGE,
+                    operation,
+                    "Slot index must be between 0 and " + (Constants.MAX_SCENES - 1) + ", got: " + slotIndex,
+                    Map.of("slotIndex", slotIndex)
+                );
+            }
+            
+            // Step 2: Check if clip exists
+            if (!hasClipAt(trackIndex, slotIndex)) {
+                logger.info("BitwigApiFacade: No clip exists at track " + trackIndex + ", slot " + slotIndex);
+                return new ArrayList<>();
+            }
+            
+            // Step 3: Select the clip slot - this makes cursorClip point to it
+            // The NoteStep observer will immediately start populating noteDataCache
+            selectClipSlot(trackIndex, slotIndex);
+            
+            // Step 4: Wait for observer callbacks to populate cache
+            // Bitwig's observer callbacks are async, so we need to give them time to fire
+            // IMPORTANT: We wait AFTER selecting the clip so observer can fire!
+            try {
+                Thread.sleep(500); // 500ms for observer to populate cache
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warn("BitwigApiFacade: Note reading interrupted");
+                return new ArrayList<>();
+            }
+            
+            // Step 6: Convert cached data to output format
+            List<Map<String, Object>> notes = new ArrayList<>();
+            for (Map.Entry<Integer, Map<Integer, NoteData>> stepEntry : noteDataCache.entrySet()) {
+                int step = stepEntry.getKey();
+                Map<Integer, NoteData> pitchMap = stepEntry.getValue();
+                
+                for (Map.Entry<Integer, NoteData> pitchEntry : pitchMap.entrySet()) {
+                    int pitch = pitchEntry.getKey();
+                    NoteData noteData = pitchEntry.getValue();
+                    
+                    Map<String, Object> note = new LinkedHashMap<>();
+                    note.put("p", pitch);              // pitch (MIDI note number)
+                    note.put("s", step);               // step (position in 16th notes)
+                    note.put("v", noteData.velocity); // velocity (1-127)
+                    note.put("d", noteData.duration); // duration (in 16th steps)
+                    notes.add(note);
+                }
+            }
+            
+            // Sort notes by step position for consistent ordering
+            notes.sort((a, b) -> {
+                int stepCompare = Integer.compare((Integer)a.get("s"), (Integer)b.get("s"));
+                if (stepCompare != 0) return stepCompare;
+                return Integer.compare((Integer)a.get("p"), (Integer)b.get("p"));
+            });
+            
+            logger.info("BitwigApiFacade: Successfully read " + notes.size() + " notes from clip using cached data");
+            return notes;
+        });
+    }
+
+    /**
      * Inserts a Bitwig device using UUID-based matcher with reflection for API compatibility.
      * This method inserts the device at the specified position by using beforeDeviceInsertionPoint()
      * on the device currently at that position, or startOfDeviceChainInsertionPoint() for position 0.
@@ -3725,5 +3839,49 @@ public class BitwigApiFacade {
     public boolean launchScene(int index) {
         logger.info("BitwigApiFacade: Launching scene at index " + index);
         return sceneBankFacade.launchScene(index);
+    }
+
+    // ========================================
+    // Private Helper Methods - Note Reading
+    // ========================================
+
+    /**
+     * Callback method for NoteStep observer (Moss pattern).
+     * Continuously updates noteDataCache as clip content changes.
+     * This is called by Bitwig for EVERY note event in the currently selected clip.
+     * 
+     * CRITICAL: This callback is installed in the constructor and runs continuously!
+     */
+    private void handleNoteStepData(NoteStep noteStep) {
+        try {
+            int step = noteStep.x();     // Step position (0-255)
+            int pitch = noteStep.y();    // MIDI pitch (0-127)
+            
+            // Only cache NoteOn events (actual note starts)
+            if (noteStep.state() == NoteStep.State.NoteOn) {
+                int velocity = (int)(noteStep.velocity() * 127); // Normalize to 1-127
+                double duration = noteStep.duration() * 4.0;     // Convert beats to 16th steps
+                
+                // Get or create step map
+                noteDataCache.putIfAbsent(step, java.util.Collections.synchronizedMap(new LinkedHashMap<>()));
+                Map<Integer, NoteData> stepMap = noteDataCache.get(step);
+                
+                // Store note data
+                stepMap.put(pitch, new NoteData(velocity, duration));
+                
+            } else if (noteStep.state() == NoteStep.State.Empty) {
+                // Note was deleted - remove from cache
+                Map<Integer, NoteData> stepMap = noteDataCache.get(step);
+                if (stepMap != null) {
+                    stepMap.remove(pitch);
+                    // Clean up empty step maps
+                    if (stepMap.isEmpty()) {
+                        noteDataCache.remove(step);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("BitwigApiFacade: Error in NoteStep observer callback: " + e.getMessage());
+        }
     }
 }

@@ -180,6 +180,7 @@ public class McpServerManager {
                 ClipWriterTool.writeNoteSpecification(bitwigApiFacade, structuredLogger),
                 ClipWriterTool.writeNotesSpecification(bitwigApiFacade, structuredLogger),
                 ClipWriterTool.clearClipSpecification(bitwigApiFacade, structuredLogger),
+                ClipWriterTool.readNotesSpecification(bitwigApiFacade, structuredLogger),
                 DeviceInsertTool.insertBitwigDeviceSpecification(bitwigApiFacade, structuredLogger),
                 ListBitwigDevicesTool.specification(structuredLogger),
                 TrackManagementTool.createInstrumentTrackSpecification(bitwigApiFacade, structuredLogger),
