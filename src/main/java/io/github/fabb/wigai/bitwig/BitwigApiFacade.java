@@ -119,7 +119,7 @@ public class BitwigApiFacade {
         this.projectParameterBank = masterTrack.createCursorRemoteControlsPage(Constants.PROJECT_PARAMETER_COUNT);
 
         // Initialize track bank for clip launching (support up to 128 tracks and 128 scenes for full functionality)
-        this.trackBank = host.createTrackBank(Constants.MAX_TRACKS, 0, Constants.MAX_SCENES);
+        this.trackBank = host.createTrackBank(Constants.MAX_TRACKS, 0, Constants.MAX_SCENES, true);
         this.sceneBankFacade = new SceneBankFacade(host, logger, Constants.MAX_SCENES); // Support up to 128 scenes for full functionality
         this.arrangerFacade = new ArrangerFacade(host, logger); // Support for Arranger cue markers
 
