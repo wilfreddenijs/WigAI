@@ -54,6 +54,7 @@ public class BitwigApiFacade {
     private final CursorTrack cursorTrack;
     private final CursorRemoteControlsPage projectParameterBank;
     private final List<DeviceBank> trackDeviceBanks;
+    private final DeviceLayerFacade deviceLayerFacade;
     private NoteInput noteInput; // Nullable - only available if MIDI port exists
     private final Clip cursorClip; // For writing notes to clips
     // private final VstPluginScanner vstPluginScanner; // For scanning available plugins - TEMPORARILY DISABLED
@@ -249,6 +250,9 @@ public class BitwigApiFacade {
             }
         }
 
+        // Layer access for devices with layers (Instrument Layer etc.); must be created during init
+        this.deviceLayerFacade = new DeviceLayerFacade(logger, cursorTrack, cursorDevice, trackBank, trackDeviceBanks);
+
         // Initialize MIDI note input for sending MIDI messages
         // Only create if MIDI ports are available
         try {
@@ -263,6 +267,13 @@ public class BitwigApiFacade {
         // Initialize VST Plugin Scanner - TEMPORARILY DISABLED
         // this.vstPluginScanner = new VstPluginScanner(host, logger);
         // logger.info("BitwigApiFacade: VST Plugin Scanner initialized");
+    }
+
+    /**
+     * Gets the facade for reading and changing layers of devices with layers.
+     */
+    public DeviceLayerFacade getDeviceLayerFacade() {
+        return deviceLayerFacade;
     }
 
     // ========================================
