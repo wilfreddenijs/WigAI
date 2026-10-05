@@ -2850,7 +2850,8 @@ public class BitwigApiFacade {
                         "Volume must be between 0.0 and 1.0, got: " + volume
                     );
                 }
-                track.volume().set(volume);
+                // Parameter.set() is silently ignored for channel parameters; write via value() instead
+                track.volume().value().setImmediately(volume);
                 logger.info("BitwigApiFacade: Set volume to " + volume);
             }
 
@@ -2862,7 +2863,7 @@ public class BitwigApiFacade {
                         "Pan must be between 0.0 and 1.0, got: " + pan
                     );
                 }
-                track.pan().set(pan);
+                track.pan().value().setImmediately(pan);
                 logger.info("BitwigApiFacade: Set pan to " + pan);
             }
 
